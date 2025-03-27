@@ -46,17 +46,34 @@ class CallHandler {
       // Register the call with voicebot
       const response = await this.voicebotAPI.registerCall(callDetails);
       
-      if (response.status === 'success' && response.data && response.data.socketURL) {
-        // Store the websocket URL and hangup URL
-        this.activeCalls.get(callId).socketURL = response.data.socketURL;
-        this.activeCalls.get(callId).hangupUrl = response.data.HangupUrl;
-        
-        // Connect to the voicebot via WebSocket
-        await this.connectToVoicebot(callId);
+      // Log the full response for debugging
+      logger.info('Voicebot API response', { callId, response });
+      
+      // Check if we have a valid response with socketURL
+      if (response && 
+          response.status === 'success' && 
+          response.data && 
+          response.data.data && 
+          response.data.data.socketURL) {
+          
+          // The structure is different - socketURL is inside data.data
+          const responseData = response.data.data;
+          
+          // Store the websocket URL and hangup URL
+          this.activeCalls.get(callId).socketURL = responseData.socketURL;
+          this.activeCalls.get(callId).hangupUrl = responseData.HangupUrl;
+          this.activeCalls.get(callId).statusCallbackUrl = responseData.statusCallbackUrl;
+          this.activeCalls.get(callId).recordingStatusUrl = responseData.recordingStatusUrl;
+          
+          // Connect to the voicebot via WebSocket
+          await this.connectToVoicebot(callId);
       } else {
-        logger.error('Failed to get WebSocket URL from voicebot', { callId, response });
-        await channel.play({ media: 'sound:sorry' });
-        await channel.hangup();
+          logger.error('Failed to get WebSocket URL from voicebot', { callId, response });
+          await channel.play({
+            media: 'sound:/var/lib/asterisk/sounds/sorry.gsm',
+            lang: 'en'  // Specify the language
+          });
+          await channel.hangup();
       }
       
     } catch (err) {

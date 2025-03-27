@@ -14,12 +14,27 @@ class VoicebotAPI {
 
   async registerCall(callDetails) {
     try {
-      logger.info('Registering call with voicebot', { callId: callDetails.CallSid });
+      logger.info('Registering call with voicebot', { 
+        callId: callDetails.CallSid,
+        url: this.config.incomingCallUrl
+      });
+      
+      logger.debug('Call details being sent', {
+        callDetails: JSON.stringify(callDetails)
+      });
       
       const response = await this.axios.post(
         this.config.incomingCallUrl,
         callDetails
       );
+      
+      // Log the raw response
+      logger.info('Raw API response', {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+        data: JSON.stringify(response.data)
+      });
       
       logger.info('Call registered successfully', { 
         callId: callDetails.CallSid,
@@ -31,7 +46,16 @@ class VoicebotAPI {
       logger.error('Error registering call with voicebot', {
         callId: callDetails.CallSid,
         error: error.message,
-        response: error.response?.data
+        config: error.config ? {
+          url: error.config.url,
+          method: error.config.method,
+          headers: error.config.headers
+        } : 'No config available',
+        response: error.response ? {
+          status: error.response.status,
+          statusText: error.response.statusText,
+          data: error.response.data
+        } : 'No response data'
       });
       throw error;
     }
