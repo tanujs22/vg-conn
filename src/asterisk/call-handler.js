@@ -1,6 +1,8 @@
 const logger = require('../utils/logger');
 const VoicebotAPI = require('../voicebot/api-client');
 const VoicebotClient = require('../voicebot/websocket-client');
+const RTPServer = require('../audio/rtp-server');
+const AudioStreamBridge = require('../audio/stream-bridge');
 const config = require('../../config/default');
 
 class CallHandler {
@@ -65,13 +67,13 @@ class CallHandler {
           this.activeCalls.get(callId).statusCallbackUrl = responseData.statusCallbackUrl;
           this.activeCalls.get(callId).recordingStatusUrl = responseData.recordingStatusUrl;
           
-          // Connect to the voicebot via WebSocket
-          await this.connectToVoicebot(callId);
+          // Set up RTP and connect to voicebot
+          await this.setupRTPAndConnectVoicebot(callId);
       } else {
           logger.error('Failed to get WebSocket URL from voicebot', { callId, response });
           await channel.play({
             media: 'sound:/var/lib/asterisk/sounds/sorry.gsm',
-            lang: 'en'  // Specify the language
+            lang: 'en'
           });
           await channel.hangup();
       }
@@ -79,7 +81,8 @@ class CallHandler {
     } catch (err) {
       logger.error(`Error handling call`, { 
         callId,
-        error: err.message
+        error: err.message,
+        stack: err.stack
       });
       
       // Attempt to hangup on error
@@ -94,48 +97,141 @@ class CallHandler {
     }
   }
 
-  async connectToVoicebot(callId) {
+  async setupRTPAndConnectVoicebot(callId) {
     const callData = this.activeCalls.get(callId);
     if (!callData) {
       logger.error('Call data not found', { callId });
       return false;
     }
     
-    // Create a voicebot client for this call
-    const voicebotClient = new VoicebotClient(config.voicebot);
-    callData.voicebotClient = voicebotClient;
-    
-    // Set up event handlers
-    voicebotClient.on('connected', () => {
-      logger.info('Connected to voicebot', { callId });
-      callData.state = 'connected_to_voicebot';
-      
-      // Here we would set up audio streaming between Asterisk and the voicebot
-      // This will be implemented in the next step
-    });
-    
-    voicebotClient.on('control', (message) => {
-      logger.info('Received control message from voicebot', { callId, message });
-      // Handle control messages (like hangup requests)
-    });
-    
-    voicebotClient.on('audio', (audioData) => {
-      logger.debug('Received audio from voicebot', { 
-        callId, 
-        size: audioData.byteLength 
+    try {
+      // Create RTP server for audio exchange
+      const rtpServer = new RTPServer({
+        localPort: 3000,
+        remotePort: 3001,
+        localAddress: '127.0.0.1',
+        remoteAddress: '127.0.0.1',
+        payloadType: 0  // 0 = PCMU (G.711 μ-law)
       });
-      // Forward audio to Asterisk (implemented in next step)
-    });
-    
-    // Connect to the voicebot
-    const connected = await voicebotClient.connect(callId, callData.socketURL);
-    
-    if (!connected) {
-      logger.error('Failed to connect to voicebot WebSocket', { callId });
+      callData.rtpServer = rtpServer;
+      
+      // Create a voicebot client for this call
+      const voicebotClient = new VoicebotClient(config.voicebot);
+      callData.voicebotClient = voicebotClient;
+      
+      // Create audio stream bridge
+      const audioStreamBridge = new AudioStreamBridge(callId);
+      callData.audioStreamBridge = audioStreamBridge;
+      
+      // Start RTP server
+      rtpServer.start();
+      
+      // Set up event handlers for RTP server
+      rtpServer.on('audio', (audioData) => {
+        // Process audio from Asterisk and forward to voicebot
+        audioStreamBridge.processAudioFromAsterisk(audioData);
+      });
+      
+      // Set up event handlers for audio bridge
+      audioStreamBridge.on('outgoing_media', (mediaEvent) => {
+        // Send media event to voicebot
+        voicebotClient.sendMediaEvent(mediaEvent);
+      });
+      
+      audioStreamBridge.on('incoming_audio', (audioData) => {
+        // Send audio back to Asterisk via RTP
+        rtpServer.sendAudio(audioData);
+      });
+      
+      // Set up event handlers for the voicebot client
+      voicebotClient.on('connected', () => {
+        logger.info('Connected to voicebot', { callId });
+        callData.state = 'connected_to_voicebot';
+        
+        // Send start event
+        const startEvent = {
+          sequenceNumber: 0,
+          event: "start",
+          start: {
+            callId: callId,
+            streamId: audioStreamBridge.streamId,
+            accountId: "10144634", // This could be configurable
+            tracks: ["inbound"],
+            mediaFormat: {
+              encoding: "mulaw",
+              sampleRate: 8000
+            }
+          }
+        };
+        
+        voicebotClient.sendControl(startEvent);
+        logger.info('Sent start event to voicebot', { callId });
+        
+        // Start audio streaming
+        audioStreamBridge.startStreaming();
+        
+        // Transfer the call to the External Media extension
+        this.transferCallToExternalMedia(callId);
+      });
+      
+      voicebotClient.on('media', (mediaEvent) => {
+        // Process audio from voicebot
+        audioStreamBridge.processAudioFromVoicebot(mediaEvent);
+      });
+      
+      voicebotClient.on('control', (message) => {
+        logger.info('Received control message from voicebot', { callId, message });
+      });
+      
+      voicebotClient.on('error', (error) => {
+        logger.error('Voicebot WebSocket error', { callId, error: error.message });
+      });
+      
+      // Connect to the voicebot
+      const connected = await voicebotClient.connect(callId, callData.socketURL);
+      
+      if (!connected) {
+        logger.error('Failed to connect to voicebot WebSocket', { callId });
+        return false;
+      }
+      
+      return true;
+    } catch (error) {
+      logger.error('Error setting up RTP and connecting to voicebot', { 
+        callId, 
+        error: error.message,
+        stack: error.stack
+      });
       return false;
     }
+  }
+
+  async transferCallToExternalMedia(callId) {
+    const callData = this.activeCalls.get(callId);
+    if (!callData) return;
     
-    return true;
+    try {
+      // Determine the extension to transfer to (in the 7XXX range)
+      const externalMediaExt = '7000';
+      
+      // Redirect the call to the external media extension
+      await callData.channel.continueInDialplan({
+        context: 'stream-audio',
+        extension: externalMediaExt,
+        priority: 1
+      });
+      
+      logger.info('Transferred call to External Media', { 
+        callId, 
+        extension: externalMediaExt 
+      });
+    } catch (error) {
+      logger.error('Error transferring call to External Media', { 
+        callId, 
+        error: error.message,
+        stack: error.stack
+      });
+    }
   }
 
   async handleCallEnd(event, channel) {
@@ -152,14 +248,45 @@ class CallHandler {
         durationSeconds: duration
       });
       
-      // Notify voicebot of hangup if we have a HangupUrl
+      // Stop audio streaming
+      if (callData.audioStreamBridge) {
+        callData.audioStreamBridge.stopStreaming();
+        
+        // Send disconnect event to voicebot
+        if (callData.voicebotClient && callData.voicebotClient.connected) {
+          const disconnectEvent = callData.audioStreamBridge.createDisconnectEvent();
+          callData.voicebotClient.sendDisconnectEvent(disconnectEvent);
+        }
+      }
+      
+      // Stop RTP server
+      if (callData.rtpServer) {
+        callData.rtpServer.stop();
+      }
+      
+      // Notify voicebot of hangup
       if (callData.HangupUrl) {
         try {
-          // Use the full URL from the response
           await this.voicebotAPI.notifyHangup(callId, {
-            Duration: Math.floor(duration),
-            CallStatus: "completed"
-          }, callData.HangupUrl); // Pass the hangup URL to the method
+            hangupCause: "Customer Hungup",
+            disconnectedBy: channel.caller.number,
+            AnswerTime: new Date(callData.startTime).toISOString().replace('T', ' ').substring(0, 19),
+            BillDuration: Math.floor(duration).toString(),
+            BillRate: "0.006",
+            CallStatus: "completed",
+            CallUUID: callId,
+            Direction: "inbound",
+            Duration: Math.floor(duration).toString(),
+            EndTime: new Date().toISOString().replace('T', ' ').substring(0, 19),
+            Event: "Hangup",
+            From: channel.caller.number,
+            HangupCause: "NORMAL_CLEARING",
+            HangupSource: "Callee",
+            SessionStart: new Date(callData.startTime).toISOString().replace('T', ' ').substring(0, 19),
+            StartTime: new Date(callData.startTime).toISOString().replace('T', ' ').substring(0, 19),
+            To: channel.connected.number,
+            TotalCost: "0.00000"
+          }, callData.HangupUrl);
         } catch (error) {
           logger.error('Failed to notify hangup', { callId, error: error.message });
         }
