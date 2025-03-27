@@ -49,13 +49,17 @@ class VoicebotClient extends EventEmitter {
     this.connected = false;
     logger.info('WebSocket connection closed', { code, reason });
     
+    // Store the socketURL in the class instance
+    this.socketURL = socketURL;
+    
     // Attempt to reconnect if needed
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
       logger.info(`Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
       
       setTimeout(() => {
-        this.connect(callId, socketURL).catch(err => {
+        // Use the stored socketURL
+        this.connect(callId, this.socketURL).catch(err => {
           logger.error('Reconnection attempt failed', { error: err.message });
         });
       }, this.reconnectInterval);

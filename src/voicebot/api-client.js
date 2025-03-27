@@ -66,7 +66,7 @@ class VoicebotAPI {
       logger.info('Notifying voicebot of call hangup', { callId: callSid });
       
       const response = await this.axios.post(
-        this.config.hangupUrl,
+        HangupUrl,
         {
           CallSid: callSid,
           ...callDetails

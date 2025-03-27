@@ -61,7 +61,7 @@ class CallHandler {
           
           // Store the websocket URL and hangup URL
           this.activeCalls.get(callId).socketURL = responseData.socketURL;
-          this.activeCalls.get(callId).hangupUrl = responseData.HangupUrl;
+          this.activeCalls.get(callId).HangupUrl = responseData.HangupUrl;
           this.activeCalls.get(callId).statusCallbackUrl = responseData.statusCallbackUrl;
           this.activeCalls.get(callId).recordingStatusUrl = responseData.recordingStatusUrl;
           
@@ -152,13 +152,14 @@ class CallHandler {
         durationSeconds: duration
       });
       
-      // Notify voicebot of hangup if we have a hangupUrl
-      if (callData.hangupUrl) {
+      // Notify voicebot of hangup if we have a HangupUrl
+      if (callData.HangupUrl) {
         try {
+          // Use the full URL from the response
           await this.voicebotAPI.notifyHangup(callId, {
             Duration: Math.floor(duration),
             CallStatus: "completed"
-          });
+          }, callData.HangupUrl); // Pass the hangup URL to the method
         } catch (error) {
           logger.error('Failed to notify hangup', { callId, error: error.message });
         }
