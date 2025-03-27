@@ -1,9 +1,26 @@
+const express = require('express');
 const asteriskClient = require('./asterisk/ari-client');
 const callHandler = require('./asterisk/call-handler');
 const logger = require('./utils/logger');
 
 async function main() {
   try {
+    // Set up a simple HTTP server to keep the app running and provide status
+    const app = express();
+    const port = process.env.PORT || 3000;
+    
+    app.get('/status', (req, res) => {
+      res.json({
+        status: 'running',
+        asteriskConnected: asteriskClient.connected,
+        activeCalls: Array.from(callHandler.activeCalls.keys())
+      });
+    });
+    
+    app.listen(port, () => {
+      logger.info(`Status server listening on port ${port}`);
+    });
+    
     // Connect to Asterisk
     await asteriskClient.connect();
     
@@ -14,11 +31,6 @@ async function main() {
     });
     
     logger.info('Voicebot connector started and ready for calls');
-    
-    // Keep the application running
-    setInterval(() => {
-      logger.debug('Connector alive and listening for calls');
-    }, 60000); // Log every minute to show it's still running
     
     // Handle process termination
     process.on('SIGINT', () => {
