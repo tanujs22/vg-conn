@@ -63,7 +63,8 @@ class CallHandler {
           
           // Store the websocket URL and hangup URL
           this.activeCalls.get(callId).socketURL = responseData.socketURL;
-          this.activeCalls.get(callId).HangupUrl = responseData.HangupUrl;
+          this.activeCalls.get(callId).hangupUrl = responseData.HangupUrl; // Store with lowercase 'h'
+          this.activeCalls.get(callId).HangupUrl = responseData.HangupUrl; // Also store with uppercase 'H' for safety
           this.activeCalls.get(callId).statusCallbackUrl = responseData.statusCallbackUrl;
           this.activeCalls.get(callId).recordingStatusUrl = responseData.recordingStatusUrl;
           
@@ -187,7 +188,8 @@ class CallHandler {
         logger.error('Voicebot WebSocket error', { callId, error: error.message });
       });
       
-      // Connect to the voicebot
+      // Connect to the voicebot - store the socketURL in the voicebotClient for reconnection
+      voicebotClient.socketURL = callData.socketURL;
       const connected = await voicebotClient.connect(callId, callData.socketURL);
       
       if (!connected) {
@@ -264,9 +266,11 @@ class CallHandler {
         callData.rtpServer.stop();
       }
       
-      // Notify voicebot of hangup
-      if (callData.HangupUrl) {
+      // Notify voicebot of hangup - try with both uppercase and lowercase keys
+      const hangupUrl = callData.hangupUrl || callData.HangupUrl;
+      if (hangupUrl) {
         try {
+          logger.info('Sending hangup notification to URL', { callId, hangupUrl });
           await this.voicebotAPI.notifyHangup(callId, {
             hangupCause: "Customer Hungup",
             disconnectedBy: channel.caller.number,
@@ -286,10 +290,12 @@ class CallHandler {
             StartTime: new Date(callData.startTime).toISOString().replace('T', ' ').substring(0, 19),
             To: channel.connected.number,
             TotalCost: "0.00000"
-          }, callData.HangupUrl);
+          }, hangupUrl);
         } catch (error) {
           logger.error('Failed to notify hangup', { callId, error: error.message });
         }
+      } else {
+        logger.error('No hangup URL found for call', { callId });
       }
       
       // Disconnect voicebot client if it exists
